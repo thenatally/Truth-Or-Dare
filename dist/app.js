@@ -6,6 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const API_BASE_URL = "https://api.truthordarebot.xyz/v1";
 const ALLOWED_MENTIONS = { parse: [] };
+let tokens = {};
 // Color definitions
 const COLOR_MAP = {
     typeHues: {
@@ -37,11 +38,33 @@ function getColor(type, rating) {
     return hslToColorInt(hue, saturation, 50);
 }
 app.use(express.json({ verify: VerifyDiscordRequest(process.env.PUBLIC_KEY) }));
+async function removeComponents(messageId, channelId, botToken) {
+    const url = `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`;
+    try {
+        const response = await fetch(url, {
+            method: "PATCH",
+            headers: {
+                Authorization: `Bot ${botToken}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ components: [] }),
+        });
+        if (!response.ok) {
+            console.error(`Failed to remove components: ${response.statusText}`);
+        }
+    }
+    catch (error) {
+        console.error("Error removing components:", error);
+    }
+}
 app.post("/interactions", async function (req, res) {
     const { type, data } = req.body;
     if (type === InteractionType.PING) {
         return res.send({ type: InteractionResponseType.PONG });
     }
+    // console.log(tokens);
+    // console.log(req.body);
+    tokens[req.body.id] = req.body.token;
     if (type === InteractionType.APPLICATION_COMMAND) {
         const { name, options } = data;
         const rating = options?.find((option) => option.name === "rating")?.value;
@@ -57,6 +80,15 @@ app.post("/interactions", async function (req, res) {
         }
         try {
             const response = await fetch(apiUrl);
+            if (response.status === 429) {
+                return res.send({
+                    type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                    data: {
+                        content: "Rate limit exceeded. Please try again later.",
+                        allowed_mentions: ALLOWED_MENTIONS,
+                    },
+                });
+            }
             const result = await response.json();
             const embed = {
                 title: result.question,
@@ -65,9 +97,38 @@ app.post("/interactions", async function (req, res) {
                     text: `Type: ${result.type} | Rating: ${result.rating} | ID: ${result.id}`,
                 },
             };
+            const components = [
+                {
+                    type: 1, // Action row
+                    components: [
+                        {
+                            type: 2, // Button
+                            style: 1, // Primary
+                            label: "Truth",
+                            custom_id: `new_truth_${rating || "default"}`,
+                        },
+                        {
+                            type: 2, // Button
+                            style: 4, // Danger
+                            label: "Dare",
+                            custom_id: `new_dare_${rating || "default"}`,
+                        },
+                        {
+                            type: 2, // Button
+                            style: 2, // Secondary
+                            label: "Would You Rather",
+                            custom_id: `new_wyr_${rating || "default"}`,
+                        },
+                    ],
+                },
+            ];
             return res.send({
                 type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-                data: { embeds: [embed], allowed_mentions: ALLOWED_MENTIONS },
+                data: {
+                    embeds: [embed],
+                    components,
+                    allowed_mentions: ALLOWED_MENTIONS,
+                },
             });
         }
         catch (error) {
@@ -81,6 +142,94 @@ app.post("/interactions", async function (req, res) {
             });
         }
     }
+    if (type === InteractionType.MESSAGE_COMPONENT) {
+        const [action, name, rating] = data.custom_id.split("_");
+        const originalMessageInteractionId = req.body.message.interaction_metadata.id;
+        const originalMessageInteractionToken = tokens[originalMessageInteractionId];
+        // /webhooks/{application.id}/{interaction.token}/messages/@original
+        await fetch(`https://discord.com/api/v10/webhooks/${process.env.APP_ID}/${originalMessageInteractionToken}/messages/@original`, {
+            method: "PATCH",
+            headers: {
+                // Authorization: `Bot ${process.env.BOT_TOKEN}`,
+                "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+                components: [],
+            }),
+        });
+        delete tokens[originalMessageInteractionId];
+        // console.log(`Response from Discord API: ${r.status} ${await r.text()}`);
+        if (action === "new") {
+            const apiUrl = `${API_BASE_URL}/${name === "truth" ? "truth" : name === "dare" ? "dare" : "wyr"}${rating !== "default" ? `?rating=${rating}` : ""}`;
+            try {
+                const response = await fetch(apiUrl);
+                if (response.status === 429) {
+                    return res.send({
+                        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                        data: {
+                            content: "Rate limit exceeded. Please try again later.",
+                            allowed_mentions: ALLOWED_MENTIONS,
+                        },
+                    });
+                }
+                const result = await response.json();
+                const embed = {
+                    title: result.question,
+                    color: getColor(name, rating !== "default" ? rating : undefined),
+                    footer: {
+                        text: `Type: ${result.type} | Rating: ${result.rating} | ID: ${result.id}`,
+                    },
+                };
+                const components = [
+                    {
+                        type: 1, // Action row
+                        components: [
+                            {
+                                type: 2, // Button
+                                style: 1, // Primary
+                                label: "Truth",
+                                custom_id: `new_truth_${rating || "default"}`,
+                            },
+                            {
+                                type: 2, // Button
+                                style: 4, // Danger
+                                label: "Dare",
+                                custom_id: `new_dare_${rating || "default"}`,
+                            },
+                            {
+                                type: 2, // Button
+                                style: 2, // Secondary
+                                label: "Would You Rather",
+                                custom_id: `new_wyr_${rating || "default"}`,
+                            },
+                        ],
+                    },
+                ];
+                return res.send({
+                    type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                    data: {
+                        embeds: [embed],
+                        components,
+                        allowed_mentions: ALLOWED_MENTIONS,
+                    },
+                });
+            }
+            catch (error) {
+                console.error(error);
+                return res.send({
+                    type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                    data: {
+                        content: "Failed to fetch data from the API.",
+                        allowed_mentions: ALLOWED_MENTIONS,
+                    },
+                });
+            }
+        }
+    }
+});
+app.get("/", (req, res) => {
+    //redirect to auth link
+    res.redirect(`https://discord.com/oauth2/authorize?client_id=${process.env.APP_ID}`);
 });
 app.listen(PORT, () => {
     console.log("Listening on port", PORT);
