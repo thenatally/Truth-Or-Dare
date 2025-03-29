@@ -59,7 +59,7 @@ const wouldYouRather: Command = {
 };
 
 const suggestCommand: Command = {
-  name: "suggest-command",
+  name: "suggest",
   type: 1,
   description: "Suggest a new question",
   options: [

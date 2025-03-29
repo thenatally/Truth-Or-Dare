@@ -134,7 +134,7 @@ app.post("/interactions", async function (req: Request, res: Response) {
   if (type === InteractionType.APPLICATION_COMMAND) {
     const { name, options } = data;
 
-    if (name === "suggest-command") {
+    if (name === "suggest") {
       const questionType = options?.find(
         (opt: any) => opt.name === "type"
       )?.value;
