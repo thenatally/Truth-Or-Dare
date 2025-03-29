@@ -1,13 +1,21 @@
 import "dotenv/config";
 import express, { Request, Response } from "express";
 import { InteractionType, InteractionResponseType } from "discord-interactions";
-import { VerifyDiscordRequest } from "./utils.js";
+import { VerifyDiscordRequest, initializeDatabase } from "./utils.js";
+import sqlite3 from "sqlite3";
+import { open } from "sqlite";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const API_BASE_URL = "https://api.truthordarebot.xyz/v1";
 const ALLOWED_MENTIONS = { parse: [] };
 let tokens: Record<string, string> = {};
+
+// Open SQLite database
+const dbPromise = open({
+  filename: "./data.db",
+  driver: sqlite3.Database,
+});
+
 // Color definitions
 const COLOR_MAP: any = {
   typeHues: {
@@ -45,33 +53,74 @@ function getColor(type: string, rating: string | undefined): number {
   return hslToColorInt(hue, saturation, 50);
 }
 
+async function handleQuestionCommand(name: string, rating: string) {
+  rating ??= Math.random() < 0.5 ? "pg" : "pg13";
+  console.log(`Handling command: ${name}, Rating: ${rating}`);
+  const db = await dbPromise;
+  const query = `
+    SELECT * FROM commands
+    WHERE type = ? AND (rating = ? OR rating IS NULL)
+    ORDER BY RANDOM() LIMIT 1
+  `;
+  const result = await db.get(query, [name.toUpperCase(), rating]);
+
+  if (!result) {
+    return {
+      type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+      data: {
+        content: "No data found for the requested command.",
+        allowed_mentions: ALLOWED_MENTIONS,
+      },
+    };
+  }
+
+  const embed = {
+    title: result.question,
+    color: getColor(name, rating),
+    footer: {
+      text: `Type: ${result.type} | Rating: ${result.rating} | ID: ${result.id}`,
+    },
+  };
+
+  const components = [
+    {
+      type: 1,
+      components: [
+        {
+          type: 2,
+          style: 1,
+          label: "Truth",
+          custom_id: `new_TRUTH_${rating || "default"}`,
+        },
+        {
+          type: 2,
+          style: 4,
+          label: "Dare",
+          custom_id: `new_DARE_${rating || "default"}`,
+        },
+        {
+          type: 2,
+          style: 2,
+          label: "Would You Rather",
+          custom_id: `new_WYR_${rating || "default"}`,
+        },
+      ],
+    },
+  ];
+
+  return {
+    type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+    data: {
+      embeds: [embed],
+      components,
+      allowed_mentions: ALLOWED_MENTIONS,
+    },
+  };
+}
+
 app.use(
   express.json({ verify: VerifyDiscordRequest(process.env.PUBLIC_KEY!) })
 );
-
-async function removeComponents(
-  messageId: string,
-  channelId: string,
-  botToken: string
-): Promise<void> {
-  const url = `https://discord.com/api/v10/channels/${channelId}/messages/${messageId}`;
-  try {
-    const response = await fetch(url, {
-      method: "PATCH",
-      headers: {
-        Authorization: `Bot ${botToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ components: [] }),
-    });
-
-    if (!response.ok) {
-      console.error(`Failed to remove components: ${response.statusText}`);
-    }
-  } catch (error) {
-    console.error("Error removing components:", error);
-  }
-}
 
 app.post("/interactions", async function (req: Request, res: Response) {
   const { type, data } = req.body;
@@ -79,203 +128,257 @@ app.post("/interactions", async function (req: Request, res: Response) {
   if (type === InteractionType.PING) {
     return res.send({ type: InteractionResponseType.PONG });
   }
-  // console.log(tokens);
-  // console.log(req.body);
+
   tokens[req.body.id] = req.body.token;
 
   if (type === InteractionType.APPLICATION_COMMAND) {
     const { name, options } = data;
-    const rating = options?.find(
-      (option: any) => option.name === "rating"
-    )?.value;
-    const apiUrl = `${API_BASE_URL}/${
-      name === "truth" ? "truth" : name === "dare" ? "dare" : "wyr"
-    }${rating ? `?rating=${rating}` : ""}`;
 
-    if (undefined == COLOR_MAP.typeHues[name]) {
-      return res.send({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: {
-          content: "Unknown command",
-          allowed_mentions: ALLOWED_MENTIONS,
-        },
-      });
-    }
+    if (name === "suggest-command") {
+      const questionType = options?.find(
+        (opt: any) => opt.name === "type"
+      )?.value;
+      const suggestion = options?.find(
+        (opt: any) => opt.name === "suggestion"
+      )?.value;
+      const rating = options?.find((opt: any) => opt.name === "rating")?.value;
+      const channelId = process.env.SUGGESTION_CHANNEL_ID;
 
-    try {
-      const response = await fetch(apiUrl);
-
-      if (response.status === 429) {
+      if (!channelId) {
         return res.send({
           type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
           data: {
-            content: "Rate limit exceeded. Please try again later.",
+            content: "Suggestion channel is not configured.",
             allowed_mentions: ALLOWED_MENTIONS,
           },
         });
       }
-
-      const result = await response.json();
-      const embed = {
-        title: result.question,
-        color: getColor(name, rating),
-        footer: {
-          text: `Type: ${result.type} | Rating: ${result.rating} | ID: ${result.id}`,
-        },
-      };
-
+      // console.log(req.body);
+      const userId = req.body.user?.id || req.body.member?.user?.id;
       const components = [
         {
-          type: 1, // Action row
+          type: 1,
           components: [
             {
-              type: 2, // Button
-              style: 1, // Primary
-              label: "Truth",
-              custom_id: `new_truth_${rating || "default"}`,
+              type: 2,
+              style: 3,
+              label: "Accept",
+              custom_id: `accept_${questionType}_${suggestion}_${rating}`,
             },
             {
-              type: 2, // Button
-              style: 4, // Danger
-              label: "Dare",
-              custom_id: `new_dare_${rating || "default"}`,
-            },
-            {
-              type: 2, // Button
-              style: 2, // Secondary
-              label: "Would You Rather",
-              custom_id: `new_wyr_${rating || "default"}`,
+              type: 2,
+              style: 4,
+              label: "Deny",
+              custom_id: `deny_${questionType}_${suggestion}_${rating}`,
             },
           ],
         },
       ];
 
+      await fetch(
+        `https://discord.com/api/v10/channels/${channelId}/messages`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bot ${process.env.DISCORD_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            embeds: [
+              {
+                title: "New Question Suggestion",
+                description: suggestion,
+                fields: [
+                  { name: "Type", value: questionType, inline: true },
+                  { name: "Rating", value: rating || "None", inline: true },
+                ],
+                color: getColor(questionType, rating),
+              },
+            ],
+            components,
+            content: `suggestion from <@${userId}>`,
+          }),
+        }
+      );
+
       return res.send({
         type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
         data: {
-          embeds: [embed],
-          components,
+          content: "Your suggestion has been sent for review.",
           allowed_mentions: ALLOWED_MENTIONS,
-        },
-      });
-    } catch (error) {
-      console.error(error);
-      return res.send({
-        type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: {
-          content: "Failed to fetch data from the API.",
-          allowed_mentions: ALLOWED_MENTIONS,
+          flags: 64, // Make the message ephemeral
         },
       });
     }
+    console.log(options);
+    const rating =
+      options?.find((opt: any) => opt.name === "rating")?.value ??
+      Math.random() < 0.5
+        ? "pg"
+        : "pg13";
+
+    const response = await handleQuestionCommand(name, rating);
+    return res.send(response);
   }
 
-  if (type === InteractionType.MESSAGE_COMPONENT) {
-    const [action, name, rating] = data.custom_id.split("_");
-
-    const originalMessageInteractionId =
-      req.body.message.interaction_metadata.id;
-
-    const originalMessageInteractionToken =
-      tokens[originalMessageInteractionId];
-    // /webhooks/{application.id}/{interaction.token}/messages/@original
-    await fetch(
-      `https://discord.com/api/v10/webhooks/${process.env.APP_ID}/${originalMessageInteractionToken}/messages/@original`,
-      {
-        method: "PATCH",
-        headers: {
-          // Authorization: `Bot ${process.env.BOT_TOKEN}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          components: [],
-        }),
-      }
+  if (
+    type === InteractionType.MESSAGE_COMPONENT ||
+    type === InteractionType.MODAL_SUBMIT
+  ) {
+    const [action, questionType, suggestion, rating] =
+      data.custom_id.split("_");
+    console.log(
+      `Action: ${action}, Type: ${questionType}, Suggestion: ${suggestion}, Rating: ${rating}`
     );
-    delete tokens[originalMessageInteractionId];
-
-    // console.log(`Response from Discord API: ${r.status} ${await r.text()}`);
-
     if (action === "new") {
-      const apiUrl = `${API_BASE_URL}/${
-        name === "truth" ? "truth" : name === "dare" ? "dare" : "wyr"
-      }${rating !== "default" ? `?rating=${rating}` : ""}`;
-
-      try {
-        const response = await fetch(apiUrl);
-
-        if (response.status === 429) {
-          return res.send({
-            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-            data: {
-              content: "Rate limit exceeded. Please try again later.",
-              allowed_mentions: ALLOWED_MENTIONS,
-            },
-          });
+      const originalMessageInteractionId =
+        req.body.message.interaction_metadata.id;
+      const originalMessageInteractionToken =
+        tokens[originalMessageInteractionId];
+      // /webhooks/{application.id}/{interaction.token}/messages/@original
+      fetch(
+        `https://discord.com/api/v10/webhooks/${process.env.APP_ID}/${originalMessageInteractionToken}/messages/@original`,
+        {
+          method: "PATCH",
+          headers: {
+            // Authorization: `Bot ${process.env.BOT_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            components: [],
+          }),
         }
+      );
+      //edit normaly just in case in server
+      fetch(
+        `https://discord.com/api/v10/channels/${req.body.channel_id}/messages/${req.body.message.id}`,
+        {
+          method: "PATCH",
+          headers: {
+            Authorization: `Bot ${process.env.DISCORD_TOKEN}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            components: [],
+          }),
+        }
+      );
+      const response = await handleQuestionCommand(
+        questionType,
+        rating === "default" ? (Math.random() < 0.5 ? "pg" : "pg13") : rating
+      );
+      return res.send(response);
+    }
 
-        const result = await response.json();
-        const embed = {
-          title: result.question,
-          color: getColor(name, rating !== "default" ? rating : undefined),
-          footer: {
-            text: `Type: ${result.type} | Rating: ${result.rating} | ID: ${result.id}`,
-          },
-        };
+    if (action === "accept") {
+      return res.send({
+        type: InteractionResponseType.MODAL,
+        data: {
+          custom_id: `edit_${questionType}_${suggestion}_${rating}`,
+          title: "Edit Suggestion",
+          components: [
+            {
+              type: 1,
+              components: [
+                {
+                  type: 4,
+                  custom_id: "edited_question",
+                  style: 1,
+                  label: "Edit Question",
+                  value: suggestion,
+                  required: true,
+                },
+              ],
+            },
+            {
+              type: 1,
+              components: [
+                {
+                  type: 4,
+                  custom_id: "edited_rating",
+                  style: 1,
+                  label: "Edit Rating",
+                  value: rating,
+                  required: true,
+                },
+              ],
+            },
+          ],
+        },
+      });
+    }
 
-        const components = [
-          {
-            type: 1, // Action row
-            components: [
-              {
-                type: 2, // Button
-                style: 1, // Primary
-                label: "Truth",
-                custom_id: `new_truth_${rating || "default"}`,
-              },
-              {
-                type: 2, // Button
-                style: 4, // Danger
-                label: "Dare",
-                custom_id: `new_dare_${rating || "default"}`,
-              },
-              {
-                type: 2, // Button
-                style: 2, // Secondary
-                label: "Would You Rather",
-                custom_id: `new_wyr_${rating || "default"}`,
-              },
-            ],
-          },
-        ];
+    if (action.startsWith("edit")) {
+      const editedQuestion = data.components[0].components.find(
+        (c: any) => c.custom_id === "edited_question"
+      )?.value;
+      const editedRating = data.components[1].components
+        .find((c: any) => c.custom_id === "edited_rating")
+        ?.value.toLowerCase();
 
-        return res.send({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-          data: {
-            embeds: [embed],
-            components,
-            allowed_mentions: ALLOWED_MENTIONS,
-          },
-        });
-      } catch (error) {
-        console.error(error);
-        return res.send({
-          type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-          data: {
-            content: "Failed to fetch data from the API.",
-            allowed_mentions: ALLOWED_MENTIONS,
-          },
-        });
-      }
+      const db = await dbPromise;
+      await db.run(
+        "INSERT INTO commands (type, question, rating) VALUES (?, ?, ?)",
+        [questionType, editedQuestion, editedRating]
+      );
+
+      console.log(
+        `Inserted into commands table: Type=${questionType}, Question="${editedQuestion}", Rating=${editedRating}`
+      );
+
+      return res.send({
+        type: InteractionResponseType.UPDATE_MESSAGE,
+        data: {
+          allowed_mentions: ALLOWED_MENTIONS,
+          components: [], // Remove buttons after acceptance
+          embeds: [
+            {
+              title: "Suggestion Accepted",
+              description: `Suggestion accepted: "${editedQuestion}"\nType: ${questionType}\nRating: ${editedRating}`,
+              fields: [
+                { name: "Type", value: questionType, inline: true },
+                { name: "Rating", value: editedRating || "None", inline: true },
+              ],
+              color: getColor(questionType, editedRating),
+            },
+          ],
+        },
+      });
+    }
+
+    if (action === "deny") {
+      return res.send({
+        type: InteractionResponseType.UPDATE_MESSAGE,
+        data: {
+          allowed_mentions: ALLOWED_MENTIONS,
+          components: [], // Remove buttons after denial
+          embeds: [
+            {
+              title: "Suggestion Denied",
+              description: `Suggestion denied: "${suggestion}"\nType: ${questionType}\nRating: ${rating}`,
+              fields: [
+                { name: "Type", value: questionType, inline: true },
+                { name: "Rating", value: rating || "None", inline: true },
+              ],
+              color: getColor(questionType, rating),
+            },
+          ],
+        },
+      });
     }
   }
 });
+
 app.get("/", (req: Request, res: Response) => {
   //redirect to auth link
   res.redirect(
     `https://discord.com/oauth2/authorize?client_id=${process.env.APP_ID}`
   );
 });
-app.listen(PORT, () => {
-  console.log("Listening on port", PORT);
-});
+
+(async () => {
+  await initializeDatabase(); // Initialize the database
+  app.listen(PORT, () => {
+    console.log("Listening on port", PORT);
+  });
+})();

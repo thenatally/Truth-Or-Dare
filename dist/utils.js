@@ -1,5 +1,7 @@
 import "dotenv/config";
 import { verifyKey } from "discord-interactions";
+import { open } from "sqlite";
+import sqlite3 from "sqlite3";
 export function VerifyDiscordRequest(clientKey) {
     return function (req, res, buf) {
         const signature = req.get("X-Signature-Ed25519");
@@ -43,4 +45,20 @@ export async function InstallGlobalCommands(appId, commands) {
 }
 export function capitalize(str) {
     return str.charAt(0).toUpperCase() + str.slice(1);
+}
+export async function initializeDatabase() {
+    const db = await open({
+        filename: "./data.db",
+        driver: sqlite3.Database,
+    });
+    // Create the commands table if it does not exist
+    await db.exec(`
+    CREATE TABLE IF NOT EXISTS commands (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL,
+      question TEXT NOT NULL,
+      rating TEXT
+    )
+  `);
+    return db;
 }
