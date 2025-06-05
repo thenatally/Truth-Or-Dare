@@ -50,7 +50,8 @@ function getToken(id: string) {
   return entry.token;
 }
 
-function buildCommandButtonsV2(rating: string) {
+function buildCommandButtonsV2(rating?: string) {
+  const ratingSuffix = rating ? `_${rating}` : "";
   return [
     {
       type: 1,
@@ -61,7 +62,7 @@ function buildCommandButtonsV2(rating: string) {
           label: "Truth",
           emoji: null,
           disabled: false,
-          custom_id: `new_TRUTH_${rating}`,
+          custom_id: `new_TRUTH${ratingSuffix}`,
         },
         {
           type: 2,
@@ -69,7 +70,7 @@ function buildCommandButtonsV2(rating: string) {
           label: "Dare",
           emoji: null,
           disabled: false,
-          custom_id: `new_DARE_${rating}`,
+          custom_id: `new_DARE${ratingSuffix}`,
         },
         {
           type: 2,
@@ -77,7 +78,7 @@ function buildCommandButtonsV2(rating: string) {
           label: "Would You Rather",
           emoji: null,
           disabled: false,
-          custom_id: `new_WYR_${rating}`,
+          custom_id: `new_WYR${ratingSuffix}`,
         },
       ],
     },
@@ -89,6 +90,7 @@ function buildQuestionMessage(
   rating: string,
   question: QuestionData,
   user?: string,
+  showRatingOnButtons: boolean = true
 ) {
   return [
     {
@@ -110,7 +112,7 @@ function buildQuestionMessage(
         },
       ],
     },
-    ...buildCommandButtonsV2(rating),
+    ...buildCommandButtonsV2(showRatingOnButtons ? rating : undefined),
   ];
 }
 
@@ -200,10 +202,8 @@ app.post(
 
       const command = data.name;
       const options = data.options || [];
-      const rating = options.find((opt: any) =>
-        opt.name === "rating"
-      )?.value?.toString() ??
-        (Math.random() < 0.5 ? "pg" : "pg13");
+      const ratingOption = options.find((opt: any) => opt.name === "rating");
+      const rating = ratingOption?.value?.toString();
 
       if (command === "suggest") {
         const questionType = options.find((opt: any) => opt.name === "type")
@@ -305,7 +305,8 @@ app.post(
         const typeSlug = command === "would-you-rather"
           ? "would-you-rather"
           : command;
-        const question = await fetchQuestion(typeSlug, rating);
+        const chosenRating = rating || (Math.random() < 0.5 ? "pg" : "pg13");
+        const question = await fetchQuestion(typeSlug, chosenRating);
 
         if (!question) {
           return res.send({
@@ -322,9 +323,10 @@ app.post(
           data: {
             components: buildQuestionMessage(
               typeSlug,
-              rating,
+              chosenRating,
               question,
               interaction.member?.user?.username || interaction.user?.username,
+              !!rating
             ),
             flags: 1 << 15,
           },
@@ -341,14 +343,9 @@ app.post(
       const action = parts[0] || "";
       const questionType = (parts[1] || "").toLowerCase();
       const suggestion = parts[2] || "";
-      const rating = (parts[3] || "pg").toLowerCase();
-      const originalMessageInteractionId = interaction.message?.interaction?.id;
-      const originalToken = originalMessageInteractionId
-        ? getToken(originalMessageInteractionId)
-        : null;
+      let rating = (parts[3] || "").toLowerCase();
 
       if (action === "new") {
-        // Remove buttons from the previous message
         const prevMessage = interaction.message;
         const prevInteractionId = req.body.message.interaction_metadata.id;
         const prevInteractionToken = prevInteractionId
@@ -359,13 +356,11 @@ app.post(
         const updatedComponents =
           prevMessage?.components?.map((component: any) => {
             if (component.type === 1) {
-              // Action Row (buttons)
               return undefined;
             }
             return component;
           }).filter(Boolean) || [];
 
-        // Remove buttons via webhook (ephemeral or interaction-based message)
         if (prevInteractionToken) {
           try {
             await fetch(
@@ -388,7 +383,6 @@ app.post(
           }
         }
 
-        // Remove buttons via channel message (in-server message)
         if (prevMessage?.channel_id && prevMessage?.id) {
           try {
             await fetch(
@@ -412,11 +406,15 @@ app.post(
           }
         }
 
+        let chosenRating = rating;
+        if (!chosenRating) {
+          chosenRating = Math.random() < 0.5 ? "pg" : "pg13";
+        }
+
         const typeSlug = parts[1]?.toLowerCase() === "wyr"
           ? "would-you-rather"
           : parts[1]?.toLowerCase();
-        const rating = parts[2]?.toLowerCase() || "pg";
-        const question = await fetchQuestion(typeSlug, rating);
+        const question = await fetchQuestion(typeSlug, chosenRating);
 
         if (!question) {
           return res.send({
@@ -434,9 +432,10 @@ app.post(
           data: {
             components: buildQuestionMessage(
               typeSlug,
-              rating,
+              chosenRating,
               question,
               interaction.member?.user?.username || interaction.user?.username,
+              false 
             ),
             flags: 1 << 15,
           },
