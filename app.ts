@@ -6,6 +6,7 @@ import {
   verifyKeyMiddleware,
 } from "discord-interactions";
 import { connectDB, Store } from "./surrealdb.js";
+import "./populate.js"
 
 dotenv.config();
 const app = express();
