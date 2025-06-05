@@ -1,7 +1,0 @@
-tunnel: b1d226c1-e7b4-499f-b0ab-1e4e7ef933f2
-credentials-file: C:/Users/Tally/.cloudflared/b1d226c1-e7b4-499f-b0ab-1e4e7ef933f2.json
-
-ingress:
-  - hostname: test.tally.gay
-    service: http://localhost:3000
-  - service: http_status:404
