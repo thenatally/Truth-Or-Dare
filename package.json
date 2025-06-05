@@ -16,7 +16,9 @@
     "populate": "node --env-file=.dev.env --enable-source-maps ./dist/populate.js",
     "down": "docker compose down",
     "up": "docker compose up -d --build",
-    "logs": "docker compose logs -f"
+    "logs": "docker compose logs -f",
+    "import": "node --env-file=.dev.env ./dist/store-import-export.js import",
+    "export": "node --env-file=.dev.env ./dist/store-import-export.js export"
   },
   "author": "Shay DeWael",
   "license": "MIT",
